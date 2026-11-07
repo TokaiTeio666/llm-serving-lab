@@ -1,7 +1,7 @@
 {
   "uid": "llm-gateway",
   "title": "LLM Gateway",
-  "tags": ["ai-infra", "llm", "gateway"],
+  "tags": ["llm-serving-lab", "llm", "gateway"],
   "timezone": "browser",
   "schemaVersion": 39,
   "version": 1,

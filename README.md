@@ -1,4 +1,4 @@
-# AI Infra — LLM Gateway + Model Service
+# LLM Serving Lab — Gateway + Model Service
 
 一个可部署、可压测、有真实错误处理、能产出性能数据的后端 + 模型服务项目。
 

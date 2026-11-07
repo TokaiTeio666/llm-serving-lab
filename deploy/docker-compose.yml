@@ -1,4 +1,4 @@
-name: ai-infra
+name: llm-serving-lab
 
 x-model-service: &model-service
   build:

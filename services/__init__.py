@@ -1,2 +1,2 @@
-"""AI Infra reference services: LLM gateway + model service."""
+"""LLM serving lab: gateway + model service."""
 
