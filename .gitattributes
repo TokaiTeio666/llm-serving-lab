@@ -1,0 +1,18 @@
+# Normalize text files in the repo, check out with LF by default.
+* text=auto
+
+# Shell scripts run under WSL/Linux -- must stay LF.
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+
+# PowerShell is fine either way; keep CRLF for Windows editors.
+*.ps1 text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.ico binary

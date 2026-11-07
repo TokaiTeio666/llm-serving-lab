@@ -1,0 +1,213 @@
+name: ai-infra
+
+x-model-service: &model-service
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    args:
+      PYTHON_IMAGE: "${PYTHON_IMAGE:-python:3.13-slim}"
+  command: ["python", "-m", "services.model_service"]
+  restart: unless-stopped
+  environment: &model-env
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    LOG_JSON: "true"
+    MODEL_BACKEND: "${MODEL_BACKEND:-mock}"
+    VLLM_TIMEOUT_S: "${VLLM_TIMEOUT_S:-300}"
+  healthcheck:
+    test:
+      - CMD
+      - python
+      - -c
+      - "import os,urllib.request,sys; url='http://127.0.0.1:'+os.environ.get('MODEL_PORT','8101')+'/healthz'; sys.exit(0 if urllib.request.urlopen(url, timeout=2).status == 200 else 1)"
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 5s
+
+services:
+  model-a:
+    <<: *model-service
+    environment:
+      <<: *model-env
+      VLLM_URL: "${VLLM_A_URL:-http://vllm:8000}"
+      VLLM_MODEL: "${VLLM_A_MODEL:-big-model}"
+      MODEL_NAME: llm-fast
+      MODEL_PORT: "8101"
+      MODEL_TTFT_MS: "${MODEL_TTFT_MS:-80}"
+      MODEL_TOKENS_PER_SEC: "${MODEL_TOKENS_PER_SEC:-120}"
+      MODEL_MAX_CONCURRENCY: "64"
+    ports:
+      - "${MODEL_A_PORT:-8101}:8101"
+
+  model-b:
+    <<: *model-service
+    environment:
+      <<: *model-env
+      VLLM_URL: "${VLLM_B_URL:-http://vllm:8000}"
+      VLLM_MODEL: "${VLLM_B_MODEL:-small-model}"
+      MODEL_NAME: llm-lite
+      MODEL_PORT: "8102"
+      MODEL_TTFT_MS: "30"
+      MODEL_TOKENS_PER_SEC: "220"
+      MODEL_MAX_CONCURRENCY: "64"
+    ports:
+      - "${MODEL_B_PORT:-8102}:8102"
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        PYTHON_IMAGE: "${PYTHON_IMAGE:-python:3.13-slim}"
+    command: ["python", "-m", "services.api"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: "true"
+      API_PORT: "8000"
+      MODEL_A_URL: http://model-a:8101
+      MODEL_B_URL: http://model-b:8102
+      MAX_INFLIGHT: "${MAX_INFLIGHT:-64}"
+      MAX_QUEUE: "${MAX_QUEUE:-256}"
+      QUEUE_TIMEOUT_S: "${QUEUE_TIMEOUT_S:-5}"
+      RATE_LIMIT_RPM: "${RATE_LIMIT_RPM:-6000}"
+      RATE_LIMIT_TPM: "${RATE_LIMIT_TPM:-6000000}"
+      RATE_LIMIT_BURST: "${RATE_LIMIT_BURST:-200}"
+      UPSTREAM_MAX_RETRIES: "${UPSTREAM_MAX_RETRIES:-2}"
+      UPSTREAM_READ_TIMEOUT: "${UPSTREAM_READ_TIMEOUT:-30}"
+      BREAKER_FAIL_THRESHOLD: "${BREAKER_FAIL_THRESHOLD:-5}"
+      BREAKER_OPEN_SECONDS: "${BREAKER_OPEN_SECONDS:-10}"
+    ports:
+      - "${GATEWAY_PORT:-8000}:8000"
+    depends_on:
+      model-a:
+        condition: service_healthy
+      model-b:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2).status == 200 else 1)"
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  prometheus:
+    image: "${PROMETHEUS_IMAGE:-prom/prometheus:v3.5.0}"
+    restart: unless-stopped
+    profiles: ["observability"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+
+  loadtest:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        PYTHON_IMAGE: "${PYTHON_IMAGE:-python:3.13-slim}"
+    profiles: ["loadtest"]
+    entrypoint: ["python", "-m", "load.harness"]
+    command:
+      - --url
+      - http://gateway:8000
+      - --duration
+      - "30"
+      - --concurrency
+      - "24"
+      - --ramp
+      - "6"
+      - --warmup
+      - "5"
+      - --unique-prompts
+      - "2000"
+      - --out
+      - /app/reports/scenario-baseline.json
+    volumes:
+      - ../reports:/app/reports
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: "no"
+
+  # Real inference. Profile "vllm" — needs an NVIDIA GPU and the NVIDIA
+  # container runtime. Start it with:
+  #   docker compose --env-file deploy/docker.env.vllm -f deploy/docker-compose.yml \
+  #     --profile vllm --profile observability up -d
+  vllm:
+    image: "${VLLM_IMAGE:-vllm/vllm-openai:latest}"
+    profiles: ["vllm"]
+    restart: unless-stopped
+    command:
+      - --model
+      - ${VLLM_MODEL:-Qwen/Qwen2.5-1.5B-Instruct}
+      - --served-model-name
+      - ${VLLM_SERVED_NAME:-qwen2.5-1.5b}
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --max-model-len
+      - ${VLLM_MAX_MODEL_LEN:-4096}
+      - --gpu-memory-utilization
+      - ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
+      - --max-num-seqs
+      - ${VLLM_MAX_NUM_SEQS:-64}
+      - --enable-prefix-caching
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://huggingface.co}
+      HUGGING_FACE_HUB_TOKEN: ${HUGGING_FACE_HUB_TOKEN:-}
+    volumes:
+      - vllm-cache:/root/.cache/huggingface
+    ports:
+      - "${VLLM_PORT:-8001}:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status == 200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 120s
+
+  grafana:
+    image: "${GRAFANA_IMAGE:-grafana/grafana:12.1.0}"
+    restart: unless-stopped
+    profiles: ["observability"]
+    depends_on:
+      - prometheus
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./grafana-dashboard.json:/var/lib/grafana/dashboards/llm-gateway.json:ro
+      - ./grafana-provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+
+volumes:
+  prometheus-data:
+  vllm-cache:
+
