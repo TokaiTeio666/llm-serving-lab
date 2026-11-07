@@ -6,6 +6,19 @@
 准入控制、限流、熔断、重试与降级、流式转发的 TTFT/TPOT、缓存、可观测性，
 以及一套能真正把这些路径跑出来的压测工具。
 
+> **English summary** — A deployable LLM gateway + model service written in
+> FastAPI. It implements the layers that actually break in production:
+> per-tenant rate limiting, exact-match response caching, admission control
+> (inflight cap + bounded queue), circuit breaking, retry with degraded
+> fallback, and SSE streaming with in-band error events.
+>
+> Bundled with it is a load harness that measures what LLM serving actually
+> cares about — **TTFT** and **TPOT**, not just RPS — and separates timeout,
+> circuit-open, rate-limited, truncated-stream and upstream-5xx failures.
+> Ships with Docker Compose, Prometheus, and a 13-panel Grafana dashboard;
+> validated against a real vLLM backend (Qwen2.5-1.5B primary + 0.5B
+> fallback on a single 8GB GPU).
+
 ---
 
 ## 为什么是这个组合
